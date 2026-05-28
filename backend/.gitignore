@@ -6,6 +6,13 @@ env/
 .env*/
 .env/
 
+.env.development
+.env.test
+.env.production
+.env
+.env.local
+.secrets
+
 # Node
 node_modules/
 dist/
