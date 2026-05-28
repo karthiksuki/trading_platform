@@ -12,10 +12,8 @@ A full-stack trading application with Web3 wallet authentication, order matching
 - [Prerequisites](#prerequisites)
 - [Project Structure](#project-structure)
 - [Quick Start](#quick-start)
-- [Environment Variables](#environment-variables)
 - [Backend](#backend)
 - [Frontend](#frontend)
-- [Admin Console](#admin-console)
 - [Database](#database)
 - [API Reference](#api-reference)
 - [Development Workflow](#development-workflow)
@@ -183,23 +181,6 @@ Open [http://localhost:5173](http://localhost:5173). API calls to `/api/*` are p
 
 ---
 
-## Environment Variables
-
-### Frontend (`frontend/.env`)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `VITE_SUPABASE_URL` | Yes | Supabase project URL |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Yes | Supabase publishable/anon key for client auth |
-| `DATABASE_URL` | No | Prisma pooler URL (Supabase Postgres) |
-| `DIRECT_URL` | No | Prisma direct URL for migrations |
-
-### Backend
-
-No `.env` file is required for the default SQLite setup. The database file `backend/trading.db` is created automatically on startup.
-
----
-
 ## Backend
 
 ### Running in production-like mode
@@ -216,45 +197,6 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - **Idempotent payments**: `Idempotency-Key` header on deposit/withdraw
 - **Admin guard**: admin routes validate email + password against `admin_emails` table
 
-### Default dev admin account
-
-On startup, the backend seeds one admin row (development only):
-
-| Email | Password |
-|-------|----------|
-| `karcode95@gmail.com` | `testin@test` |
-
-Change or remove this in production. Do not ship default credentials to a public deployment.
-
-### SQLite tables (runtime)
-
-Created/migrated at startup: `orders`, `positions`, `history`, `payment_transactions`, `cash_balances`, `idempotency_keys`, `users`, `admin_emails`, `trades`, `markets`.
-
----
-
-## Frontend
-
-### Scripts
-
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start Vite dev server (port 5173) |
-| `npm run build` | Typecheck + production build |
-| `npm run preview` | Preview production build |
-| `npm run lint` | Run ESLint |
-| `npm run prisma:generate` | Generate Prisma client |
-| `npm run prisma:migrate` | Run Prisma migrations (Postgres) |
-| `npm run prisma:push` | Push schema to Postgres without migration files |
-
-### App modes
-
-| Mode | Entry | Persistence |
-|------|--------|-------------|
-| Trader | Wallet sign-in + onboarding | Supabase session |
-| Admin | Admin login → `access_grant` | `localStorage` key `trading_platform_admin_session` |
-
-Use **Exit Admin** or **Sign out** to clear stored admin session.
-
 ---
 
 ## Admin Console
@@ -270,14 +212,7 @@ All admin API calls require `admin_email` and `admin_password` (query params for
 
 ---
 
-## Database
-
-### SQLite (primary for API)
-
-- File: `backend/trading.db`
-- Gitignored; safe to delete for a clean local reset (restart backend to recreate schema)
-
-### Prisma + PostgreSQL (optional)
+### Prisma + PostgreSQL
 
 Use when you want Supabase-hosted Postgres aligned with `frontend/prisma/schema.prisma`:
 
