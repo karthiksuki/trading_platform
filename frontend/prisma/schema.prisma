@@ -1,0 +1,201 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  user_id        String     @id @db.Text
+  user_name      String     @db.Text
+  user_profile   String     @default("") @db.Text
+  wallet_address String?    @unique @db.Text
+  details_json   Json       @default("{}")
+  created_at     DateTime   @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime   @updatedAt @db.Timestamptz(6)
+  version        Int        @default(1)
+  positions      Position[]
+  orders         Order[]
+  trades         Trade[]
+  watchlist      WatchlistItem[]
+  balances       WalletBalance[]
+  history        HistoryEvent[]
+
+  @@map("users")
+}
+
+model Market {
+  id          Int        @id @default(autoincrement())
+  market_type String     @db.Text
+  type        String     @db.Text
+  price       Decimal    @db.Decimal(18, 4)
+  quantity    Decimal    @db.Decimal(18, 4)
+  finished    Boolean    @default(false)
+  winner      String?    @db.Text
+  created_at  DateTime   @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime   @updatedAt @db.Timestamptz(6)
+  version     Int        @default(1)
+  positions   Position[]
+  orders      Order[]
+  trades      Trade[]
+  watchers    WatchlistItem[]
+  history     HistoryEvent[]
+
+  @@map("markets")
+}
+
+model Position {
+  id         Int      @id @default(autoincrement())
+  user_id    String   @db.Text
+  market_id  Int
+  type       String   @db.Text
+  quantity   Decimal  @db.Decimal(18, 4)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @updatedAt @db.Timestamptz(6)
+  version    Int      @default(1)
+
+  user    User           @relation(fields: [user_id], references: [user_id], onDelete: Restrict, onUpdate: Cascade)
+  market  Market         @relation(fields: [market_id], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  history HistoryEvent[]
+
+  @@index([user_id])
+  @@index([market_id])
+  @@map("positions")
+}
+
+model IdempotencyKey {
+  key           String   @id @db.Text
+  endpoint      String   @db.Text
+  request_hash  String?  @db.Text
+  response_json Json
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([endpoint, created_at])
+  @@map("idempotency_keys")
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+}
+
+enum OrderStatus {
+  PENDING
+  PARTIAL
+  FILLED
+  CANCELLED
+}
+
+enum TradingActionType {
+  BUY
+  SELL
+  MERGE
+  SPLIT
+  LIMIT
+}
+
+model Order {
+  id               Int         @id @default(autoincrement())
+  user_id          String      @db.Text
+  market_id        Int
+  side             OrderSide
+  order_type       OrderType
+  status           OrderStatus @default(PENDING)
+  requested_qty    Decimal     @db.Decimal(18, 4)
+  filled_qty       Decimal     @default(0) @db.Decimal(18, 4)
+  limit_price      Decimal?    @db.Decimal(18, 4)
+  client_order_id  String?     @unique @db.Text
+  created_at       DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime    @updatedAt @db.Timestamptz(6)
+  version          Int         @default(1)
+  user             User        @relation(fields: [user_id], references: [user_id], onDelete: Restrict, onUpdate: Cascade)
+  market           Market      @relation(fields: [market_id], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  trades           Trade[]
+  history          HistoryEvent[]
+
+  @@index([user_id, created_at])
+  @@index([market_id, status])
+  @@map("orders")
+}
+
+model Trade {
+  id            Int      @id @default(autoincrement())
+  order_id       Int
+  user_id        String   @db.Text
+  market_id      Int
+  side           OrderSide
+  quantity       Decimal  @db.Decimal(18, 4)
+  execution_price Decimal @db.Decimal(18, 4)
+  fee            Decimal  @default(0) @db.Decimal(18, 4)
+  pnl            Decimal? @db.Decimal(18, 4)
+  executed_at    DateTime @default(now()) @db.Timestamptz(6)
+  order          Order    @relation(fields: [order_id], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  user           User     @relation(fields: [user_id], references: [user_id], onDelete: Restrict, onUpdate: Cascade)
+  market         Market   @relation(fields: [market_id], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  history        HistoryEvent[]
+
+  @@index([order_id])
+  @@index([user_id, executed_at])
+  @@index([market_id, executed_at])
+  @@map("trades")
+}
+
+model WalletBalance {
+  id          Int      @id @default(autoincrement())
+  user_id     String   @db.Text
+  asset       String   @db.Text
+  available   Decimal  @default(0) @db.Decimal(18, 8)
+  locked      Decimal  @default(0) @db.Decimal(18, 8)
+  updated_at  DateTime @updatedAt @db.Timestamptz(6)
+  user        User     @relation(fields: [user_id], references: [user_id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([user_id, asset])
+  @@index([asset])
+  @@map("wallet_balances")
+}
+
+model WatchlistItem {
+  id         Int      @id @default(autoincrement())
+  user_id    String   @db.Text
+  market_id  Int
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  user       User     @relation(fields: [user_id], references: [user_id], onDelete: Cascade, onUpdate: Cascade)
+  market     Market   @relation(fields: [market_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([user_id, market_id])
+  @@map("watchlist_items")
+}
+
+model HistoryEvent {
+  id              Int               @id @default(autoincrement())
+  user_id         String            @db.Text
+  market_id       Int?
+  position_id     Int?
+  order_id        Int?
+  trade_id        Int?
+  action_type     TradingActionType
+  quantity        Decimal?          @db.Decimal(18, 4)
+  price           Decimal?          @db.Decimal(18, 4)
+  split_ratio     Decimal?          @db.Decimal(18, 8)
+  merge_reference String?           @db.Text
+  details_json    Json              @default("{}")
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  user            User              @relation(fields: [user_id], references: [user_id], onDelete: Restrict, onUpdate: Cascade)
+  market          Market?           @relation(fields: [market_id], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  position        Position?         @relation(fields: [position_id], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  order           Order?            @relation(fields: [order_id], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  trade           Trade?            @relation(fields: [trade_id], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([user_id, created_at])
+  @@index([market_id, created_at])
+  @@index([action_type, created_at])
+  @@map("history_events")
+}

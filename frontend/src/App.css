@@ -3,30 +3,35 @@
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 1rem;
-  overflow: hidden;
-  background: radial-gradient(circle at top, #1a2560 0%, #080c1f 55%, #050816 100%);
-}
-
-.fx-canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
+  padding: 1.5rem;
+  background: #f7f8fc;
 }
 
 .auth-card {
   position: relative;
-  z-index: 1;
-  width: min(520px, 100%);
+  width: min(560px, 100%);
   padding: 2rem;
-  border-radius: 1rem;
-  backdrop-filter: blur(8px);
-  background: rgba(13, 17, 38, 0.76);
-  border: 1px solid rgba(110, 130, 255, 0.45);
-  color: #f5f7ff;
-  box-shadow: 0 15px 35px rgba(8, 12, 32, 0.45);
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #e7e9f2;
+  color: #0f172a;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
+.auth-shell {
+  position: relative;
+  width: min(520px, 96vw);
+  padding: 2rem;
+  border-radius: 14px;
+  border: 1px solid #e7e9f2;
+  background: #ffffff;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
+.dashboard {
+  width: min(1200px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
 }
 
 h1 {
@@ -36,18 +41,24 @@ h1 {
 
 .subtitle {
   margin-top: 0.5rem;
-  color: #c8d1ff;
+  color: #475569;
 }
 
 button {
   margin-top: 1rem;
-  border: 0;
-  background: linear-gradient(135deg, #5f72ff, #6e44ff);
+  border: 1px solid #d4d8e8;
+  background: #111827;
   color: #fff;
-  border-radius: 0.7rem;
+  border-radius: 10px;
   padding: 0.72rem 1.2rem;
   cursor: pointer;
   font-weight: 600;
+}
+
+.ghost-btn {
+  border: 1px solid #d4d8e8;
+  background: #ffffff;
+  color: #111827;
 }
 
 .actions {
@@ -55,6 +66,65 @@ button {
   gap: 0.75rem;
   flex-wrap: wrap;
   margin-top: 0.5rem;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+
+.panel-grid {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.9rem;
+}
+
+.panel {
+  border: 1px solid #e7e9f2;
+  border-radius: 0.75rem;
+  padding: 0.8rem;
+  background: #ffffff;
+}
+
+.panel h3,
+.panel h4 {
+  margin: 0 0 0.5rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.55rem;
+  color: #334155;
+}
+
+input {
+  width: 100%;
+  margin-top: 0.2rem;
+  border: 1px solid rgba(140, 154, 255, 0.3);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.book-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 0.92rem;
 }
 
 button:hover {
@@ -68,17 +138,17 @@ button:disabled {
 
 .status {
   margin-top: 1rem;
-  color: #d8defc;
+  color: #334155;
 }
 
 .wallet {
   margin-top: 0.8rem;
-  color: #e7ebff;
+  color: #334155;
   word-break: break-all;
 }
 
 code {
   padding: 0.2rem 0.4rem;
   border-radius: 0.35rem;
-  background: rgba(127, 144, 255, 0.18);
+  background: #eef2ff;
 }

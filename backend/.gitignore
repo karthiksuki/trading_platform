@@ -20,3 +20,6 @@ dist/
 # OS / IDE
 .DS_Store
 Thumbs.db
+trading.db
+trading.db-shm
+trading.db-wal
