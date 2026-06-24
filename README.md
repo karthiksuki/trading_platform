@@ -6,7 +6,7 @@ Auth-free prediction market demo with public YES/NO bids, local account signup, 
 
 Add project images here later:
 
-![Dashboard page](docs/images/dasboard.png)
+![Dashboard page](docs/images/dashboard.png)
 ![Trading dashboard](docs/images/bids.png)
 ![Orderbook console](docs/images/orderbook.png)
 
