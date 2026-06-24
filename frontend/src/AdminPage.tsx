@@ -10,6 +10,8 @@ type Market = {
   id: number
   symbol: string
   name: string
+  question: string
+  description: string
   status: 'OPEN' | 'PAUSED' | 'CLOSED'
   tick_size: number
   min_order_size: number
@@ -37,6 +39,8 @@ function AdminPage({ adminEmail, adminPassword, onExit }: AdminPageProps) {
   const [logMarketFilter, setLogMarketFilter] = useState('')
   const [newMarketSymbol, setNewMarketSymbol] = useState('BTCUSD')
   const [newMarketName, setNewMarketName] = useState('Bitcoin / USD')
+  const [newMarketQuestion, setNewMarketQuestion] = useState('Will Bitcoin trade above 100,000 USD before the end of 2026?')
+  const [newMarketDescription, setNewMarketDescription] = useState('Binary YES/NO market for public prediction trading.')
   const [tickSize, setTickSize] = useState(0.01)
   const [minOrderSize, setMinOrderSize] = useState(0.001)
   const [cleanupMinutes, setCleanupMinutes] = useState(60)
@@ -91,6 +95,7 @@ function AdminPage({ adminEmail, adminPassword, onExit }: AdminPageProps) {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshNow()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -103,6 +108,7 @@ function AdminPage({ adminEmail, adminPassword, onExit }: AdminPageProps) {
       })
     }, Math.max(refreshSeconds, 3) * 1000)
     return () => window.clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, refreshSeconds, authQuery, logActionFilter, logMarketFilter])
 
   const createMarket = async () => {
@@ -115,6 +121,8 @@ function AdminPage({ adminEmail, adminPassword, onExit }: AdminPageProps) {
           admin_password: adminPassword,
           symbol: newMarketSymbol,
           name: newMarketName,
+          question: newMarketQuestion,
+          description: newMarketDescription,
           tick_size: tickSize,
           min_order_size: minOrderSize,
         }),
@@ -281,6 +289,14 @@ function AdminPage({ adminEmail, adminPassword, onExit }: AdminPageProps) {
             <input value={newMarketName} onChange={(e) => setNewMarketName(e.target.value)} />
           </label>
           <label>
+            Question
+            <input value={newMarketQuestion} onChange={(e) => setNewMarketQuestion(e.target.value)} />
+          </label>
+          <label>
+            Description
+            <input value={newMarketDescription} onChange={(e) => setNewMarketDescription(e.target.value)} />
+          </label>
+          <label>
             Tick Size
             <input type="number" value={tickSize} onChange={(e) => setTickSize(Number(e.target.value))} />
           </label>
@@ -319,7 +335,7 @@ function AdminPage({ adminEmail, adminPassword, onExit }: AdminPageProps) {
           <ul className="list">
             {markets.map((market) => (
               <li key={market.id}>
-                {market.symbol} ({market.name}) status={market.status}
+                {market.symbol} ({market.question || market.name}) status={market.status}
                 <div className="actions">
                   <button disabled={isBusy} onClick={() => void updateMarketStatus(market.id, 'OPEN')}>
                     Open
@@ -342,8 +358,8 @@ function AdminPage({ adminEmail, adminPassword, onExit }: AdminPageProps) {
           <ul className="list">
             {marketHealth.map((item) => (
               <li key={String(item.market_id)}>
-                {String(item.symbol)} bid={String(item.best_bid ?? '-')} ask={String(item.best_ask ?? '-')} spread=
-                {String(item.spread ?? '-')}
+                {String(item.symbol)} YES bid={String(item.yes_best_bid ?? '-')} ask={String(item.yes_best_ask ?? '-')} |
+                NO bid={String(item.no_best_bid ?? '-')} ask={String(item.no_best_ask ?? '-')}
               </li>
             ))}
             {!marketHealth.length && <li>No market health data</li>}
