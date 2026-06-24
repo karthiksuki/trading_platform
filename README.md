@@ -1,6 +1,6 @@
 # Trading Platform
 
-Auth-free prediction market demo with public YES/NO bids, local account signup, trading actions, payments, and an admin console.
+Prediction market with public YES/NO bids, account signup, trading actions, payments, and an admin console.
 
 ## Screenshots
 
