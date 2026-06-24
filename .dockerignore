@@ -1,0 +1,10 @@
+.git
+.cursor
+**/.env
+**/.venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/dist
+**/trading.db*
+agent-transcripts

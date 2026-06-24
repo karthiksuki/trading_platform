@@ -1,17 +1,29 @@
 import json
+import os
+import asyncio
+import base64
+import hashlib
+import hmac
+import secrets
 import sqlite3
 import time
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Literal
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from fastapi import Body, FastAPI, Header, HTTPException
+from cryptography.fernet import Fernet
+from fastapi import Body, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="trading_platform_backend", version="0.1.0")
-DB_PATH = "trading.db"
+DB_PATH = os.getenv("TRADING_DB_PATH", "trading.db")
+MARKET_DATA_SOURCE = os.getenv("MARKET_DATA_SOURCE", "polymarket").lower()
+POLYMARKET_GAMMA_URL = os.getenv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com")
+TRADING_ENCRYPTION_KEY = os.getenv("TRADING_ENCRYPTION_KEY", "dev-only-change-this-key")
 DB_LOCK = Lock()
 
 app.add_middleware(
@@ -25,6 +37,48 @@ app.add_middleware(
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def get_cipher() -> Fernet:
+    digest = hashlib.sha256(TRADING_ENCRYPTION_KEY.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def encrypt_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    return get_cipher().encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    return get_cipher().decrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def hash_password(password: str) -> str:
+    iterations = 260_000
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations)
+    return f"pbkdf2_sha256${iterations}${salt}${digest.hex()}"
+
+
+def verify_password(password: str, stored_hash: str | None) -> bool:
+    if not stored_hash:
+        return False
+    try:
+        algorithm, iterations_raw, salt, expected = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            int(iterations_raw),
+        ).hex()
+        return hmac.compare_digest(digest, expected)
+    except (ValueError, TypeError):
+        return False
 
 
 def get_connection() -> sqlite3.Connection:
@@ -176,9 +230,17 @@ class OnboardingRequest(BaseModel):
 
 
 class LocalSignupRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=200)
+    password: str = Field(min_length=8, max_length=200)
     user_name: str = Field(min_length=2, max_length=80)
     user_profile: str = Field(default="", max_length=500)
+    solana_wallet_address: str = Field(default="", max_length=120)
     profile_picture: str | None = None
+
+
+class LocalSigninRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=200)
+    password: str = Field(min_length=8, max_length=200)
 
 
 class AdminAdjustBalanceRequest(BaseModel):
@@ -359,6 +421,13 @@ def init_users_table() -> None:
             connection.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
         if "is_frozen" not in columns:
             connection.execute("ALTER TABLE users ADD COLUMN is_frozen INTEGER NOT NULL DEFAULT 0")
+        if "email" not in columns:
+            connection.execute("ALTER TABLE users ADD COLUMN email TEXT")
+        if "password_hash" not in columns:
+            connection.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+        if "solana_wallet_encrypted" not in columns:
+            connection.execute("ALTER TABLE users ADD COLUMN solana_wallet_encrypted TEXT")
+        connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(lower(email)) WHERE email IS NOT NULL")
         connection.commit()
 
 
@@ -474,6 +543,25 @@ def require_active_user(connection: sqlite3.Connection, user_id: str) -> None:
         raise HTTPException(status_code=403, detail="Account is frozen by admin.")
 
 
+def serialize_user_account(row: sqlite3.Row) -> dict[str, Any]:
+    wallet_address = str(row["wallet_address"])
+    encrypted_solana = row["solana_wallet_encrypted"] if "solana_wallet_encrypted" in row.keys() else None
+    try:
+        solana_wallet_address = decrypt_text(encrypted_solana)
+    except Exception:
+        solana_wallet_address = None
+    return {
+        "user_id": str(row["user_id"]),
+        "email": row["email"] if "email" in row.keys() else None,
+        "user_name": str(row["user_name"]),
+        "user_profile": str(row["user_profile"] or ""),
+        "wallet_address": wallet_address,
+        "solana_wallet_address": solana_wallet_address,
+        "is_admin": int(row["is_admin"]) if "is_admin" in row.keys() else 0,
+        "is_frozen": int(row["is_frozen"]) if "is_frozen" in row.keys() else 0,
+    }
+
+
 def require_admin(connection: sqlite3.Connection, user_id: str) -> None:
     row = connection.execute(
         "SELECT user_id, is_admin FROM users WHERE user_id = ?",
@@ -578,6 +666,152 @@ def serialize_market(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[s
         "last_trade_price": float(last_trade["execution_price"]) if last_trade else None,
         "last_trade_outcome": str(last_trade["outcome"]) if last_trade else None,
     }
+
+
+def parse_polymarket_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def fetch_polymarket_json(path: str, params: dict[str, Any] | None = None) -> Any:
+    query = f"?{urlencode(params)}" if params else ""
+    request = Request(
+        f"{POLYMARKET_GAMMA_URL.rstrip('/')}{path}{query}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 trading-platform/0.1",
+        },
+    )
+    with urlopen(request, timeout=12) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def normalize_polymarket_market(item: dict[str, Any]) -> dict[str, Any] | None:
+    outcomes = [str(outcome).upper() for outcome in parse_polymarket_json_list(item.get("outcomes"))]
+    prices = [
+        safe_float(price)
+        for price in parse_polymarket_json_list(item.get("outcomePrices") or item.get("outcome_prices"))
+    ]
+    if "YES" not in outcomes or "NO" not in outcomes or len(prices) < len(outcomes):
+        return None
+
+    price_by_outcome = {outcome: prices[index] for index, outcome in enumerate(outcomes) if index < len(prices)}
+    yes_price = price_by_outcome.get("YES", 0.0)
+    no_price = price_by_outcome.get("NO", 0.0)
+    liquidity = safe_float(item.get("liquidity"), 1.0)
+    quantity = max(liquidity, 1.0)
+    market_id = int(str(item["id"]))
+    yes_book = {
+        "bids": [{"price": yes_price, "quantity": quantity}] if yes_price > 0 else [],
+        "asks": [{"price": yes_price, "quantity": quantity}] if yes_price > 0 else [],
+        "best_bid": yes_price if yes_price > 0 else None,
+        "best_ask": yes_price if yes_price > 0 else None,
+    }
+    no_book = {
+        "bids": [{"price": no_price, "quantity": quantity}] if no_price > 0 else [],
+        "asks": [{"price": no_price, "quantity": quantity}] if no_price > 0 else [],
+        "best_bid": no_price if no_price > 0 else None,
+        "best_ask": no_price if no_price > 0 else None,
+    }
+    question = str(item.get("question") or item.get("title") or item.get("slug") or f"Polymarket {market_id}")
+    return {
+        "id": market_id,
+        "market_id": market_id,
+        "external_id": str(item["id"]),
+        "source": "polymarket",
+        "symbol": str(item.get("slug") or f"POLY-{market_id}")[:30].upper(),
+        "name": question,
+        "question": question,
+        "description": str(item.get("description") or "Live Polymarket market data. Trading in this app remains local demo trading."),
+        "status": "OPEN" if item.get("active") and not item.get("closed") else "CLOSED",
+        "tick_size": safe_float(item.get("minimumTickSize"), 0.01),
+        "min_order_size": safe_float(item.get("minimumOrderSize"), 1.0),
+        "market_type": "BINARY",
+        "resolved_outcome": None,
+        "resolved_at": None,
+        "outcomes": {"YES": yes_book, "NO": no_book},
+        "last_trade_at": None,
+        "last_trade_price": safe_float(item.get("lastTradePrice"), 0.0) or None,
+        "last_trade_outcome": None,
+        "volume": safe_float(item.get("volume")),
+        "liquidity": liquidity,
+    }
+
+
+def fetch_polymarket_markets(limit: int) -> list[dict[str, Any]]:
+    raw = fetch_polymarket_json(
+        "/markets",
+        {
+            "active": "true",
+            "closed": "false",
+            "limit": max(1, min(limit, 100)),
+        },
+    )
+    items = raw if isinstance(raw, list) else raw.get("data", [])
+    markets: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("enableOrderBook") is False:
+            continue
+        normalized = normalize_polymarket_market(item)
+        if normalized:
+            markets.append(normalized)
+    return markets
+
+
+def fetch_polymarket_market(market_id: int) -> dict[str, Any] | None:
+    raw = fetch_polymarket_json(f"/markets/{market_id}")
+    if not isinstance(raw, dict):
+        return None
+    return normalize_polymarket_market(raw)
+
+
+def list_local_markets(status: str, limit: int) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        query = """
+            SELECT id, symbol, name, question, description, status, tick_size, min_order_size,
+                   market_type, resolved_outcome, resolved_at, created_at, updated_at
+            FROM markets
+        """
+        args: list[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            args.append(status.upper())
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        args.append(limit)
+        rows = connection.execute(query, args).fetchall()
+        return [serialize_market(connection, row) | {"source": "local"} for row in rows]
+
+
+def get_local_market(market_id: int) -> dict[str, Any]:
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT id, symbol, name, question, description, status, tick_size, min_order_size,
+                   market_type, resolved_outcome, resolved_at, created_at, updated_at
+            FROM markets
+            WHERE id = ?
+            """,
+            (market_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Market not found.")
+        return serialize_market(connection, row) | {"source": "local"}
 
 
 def order_remaining_quantity(order_row: sqlite3.Row) -> float:
@@ -805,37 +1039,26 @@ def market_ticker() -> dict[str, str | float]:
 
 @app.get("/api/markets")
 def list_public_markets(status: str = "OPEN", limit: int = 50) -> list[dict[str, Any]]:
-    with get_connection() as connection:
-        query = """
-            SELECT id, symbol, name, question, description, status, tick_size, min_order_size,
-                   market_type, resolved_outcome, resolved_at, created_at, updated_at
-            FROM markets
-        """
-        args: list[Any] = []
-        if status:
-            query += " WHERE status = ?"
-            args.append(status.upper())
-        query += " ORDER BY updated_at DESC LIMIT ?"
-        args.append(limit)
-        rows = connection.execute(query, args).fetchall()
-        return [serialize_market(connection, row) for row in rows]
+    if MARKET_DATA_SOURCE == "polymarket":
+        try:
+            markets = fetch_polymarket_markets(limit)
+            if markets:
+                return markets
+        except Exception:
+            pass
+    return list_local_markets(status, limit)
 
 
 @app.get("/api/markets/{market_id}")
 def get_public_market(market_id: int) -> dict[str, Any]:
-    with get_connection() as connection:
-        row = connection.execute(
-            """
-            SELECT id, symbol, name, question, description, status, tick_size, min_order_size,
-                   market_type, resolved_outcome, resolved_at, created_at, updated_at
-            FROM markets
-            WHERE id = ?
-            """,
-            (market_id,),
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Market not found.")
-        return serialize_market(connection, row)
+    if MARKET_DATA_SOURCE == "polymarket":
+        try:
+            market = fetch_polymarket_market(market_id)
+            if market:
+                return market
+        except Exception:
+            pass
+    return get_local_market(market_id)
 
 
 @app.post("/api/trading/buy")
@@ -1061,6 +1284,46 @@ def orderbook(market_id: int) -> dict[str, Any]:
     }
 
 
+async def build_live_orderbook_payload(market_id: int) -> dict[str, Any]:
+    try:
+        market = get_public_market(market_id)
+        return {
+            "type": "orderbook",
+            "market_id": market_id,
+            "source": market.get("source", "local"),
+            "question": market.get("question"),
+            "outcomes": market.get("outcomes", {"YES": empty_book(), "NO": empty_book()}),
+            "last_trade_price": market.get("last_trade_price"),
+            "sent_at": utc_now(),
+        }
+    except HTTPException:
+        with get_connection() as connection:
+            yes_book = fetch_orderbook_for_outcome(connection, market_id, "YES")
+            no_book = fetch_orderbook_for_outcome(connection, market_id, "NO")
+        return {
+            "type": "orderbook",
+            "market_id": market_id,
+            "source": "local",
+            "outcomes": {"YES": yes_book, "NO": no_book},
+            "sent_at": utc_now(),
+        }
+
+
+def empty_book() -> dict[str, Any]:
+    return {"bids": [], "asks": [], "best_bid": None, "best_ask": None}
+
+
+@app.websocket("/ws/orderbooks/{market_id}")
+async def live_orderbook(websocket: WebSocket, market_id: int) -> None:
+    await websocket.accept()
+    try:
+        while True:
+            await websocket.send_json(await build_live_orderbook_payload(market_id))
+            await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        return
+
+
 @app.get("/api/trading/trades")
 def list_trades(market_id: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
     query = """
@@ -1237,32 +1500,69 @@ def onboard_user(payload: OnboardingRequest) -> dict[str, str]:
 
 
 @app.post("/api/users/signup")
-def signup_user(payload: LocalSignupRequest) -> dict[str, str | float]:
+def signup_user(payload: LocalSignupRequest) -> dict[str, Any]:
     with DB_LOCK, get_connection() as connection:
         now = utc_now()
+        email = payload.email.strip().lower()
+        existing = connection.execute("SELECT user_id FROM users WHERE lower(email) = ?", (email,)).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="Email already registered.")
         user_id = f"local:{uuid4().hex[:12]}"
-        wallet_address = user_id
+        wallet_address = payload.solana_wallet_address.strip() or user_id
+        encrypted_solana = encrypt_text(payload.solana_wallet_address.strip()) if payload.solana_wallet_address.strip() else None
         connection.execute(
             """
             INSERT INTO users (
-                user_id, wallet_address, user_name, user_profile, profile_picture, created_at, updated_at
+                user_id, wallet_address, email, password_hash, user_name, user_profile, profile_picture,
+                solana_wallet_encrypted, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
                 wallet_address,
+                email,
+                hash_password(payload.password),
                 payload.user_name,
                 payload.user_profile,
                 payload.profile_picture,
+                encrypted_solana,
                 now,
                 now,
             ),
         )
         set_cash_balance(connection, user_id, "USD", 10000.0)
         log_history(connection, "SIGNUP", user_id, None, f"Local signup for {payload.user_name}")
+        row = connection.execute(
+            """
+            SELECT user_id, wallet_address, email, user_name, user_profile, solana_wallet_encrypted, is_admin, is_frozen
+            FROM users
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
         connection.commit()
-    return {"status": "created", "user_id": user_id, "starting_balance": 10000.0}
+    return {"status": "created", "account": serialize_user_account(row), "starting_balance": 10000.0}
+
+
+@app.post("/api/users/signin")
+def signin_user(payload: LocalSigninRequest) -> dict[str, Any]:
+    email = payload.email.strip().lower()
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT user_id, wallet_address, email, password_hash, user_name, user_profile,
+                   solana_wallet_encrypted, is_admin, is_frozen
+            FROM users
+            WHERE lower(email) = ?
+            """,
+            (email,),
+        ).fetchone()
+    if not row or not verify_password(payload.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if int(row["is_frozen"]) == 1:
+        raise HTTPException(status_code=403, detail="Account is frozen by admin.")
+    return {"status": "ok", "account": serialize_user_account(row)}
 
 
 @app.get("/api/users/{user_id}")
@@ -1270,7 +1570,8 @@ def get_user(user_id: str) -> dict[str, str]:
     with get_connection() as connection:
         row = connection.execute(
             """
-            SELECT user_id, wallet_address, user_name, user_profile, profile_picture, is_admin, is_frozen, created_at, updated_at
+            SELECT user_id, wallet_address, email, user_name, user_profile, profile_picture,
+                   solana_wallet_encrypted, is_admin, is_frozen, created_at, updated_at
             FROM users
             WHERE user_id = ?
             """,
@@ -1278,7 +1579,7 @@ def get_user(user_id: str) -> dict[str, str]:
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="User not found.")
-    return dict(row)
+    return serialize_user_account(row)
 
 
 @app.post("/api/admin/access_grant")
